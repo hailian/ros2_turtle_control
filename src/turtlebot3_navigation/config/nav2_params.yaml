@@ -1,0 +1,283 @@
+# nav2 导航参数 — 针对 TurtleBot3 Burger (LDS-01, 差速底盘) 调优
+#
+# 导航原理:全局规划器在静态地图 + 实时障碍代价地图上搜索到目标点的
+# 无碰撞路径,局部控制器在滚动窗口内采样速度轨迹跟踪该路径,行为树
+# 周期性触发重规划,失败时执行恢复行为(清代价地图/后退/原地旋转)。
+#
+# 各节点由 lifecycle_manager 统一按序激活(见 launch 文件)。
+
+# ---- 定位:AMCL 粒子滤波(与 turtlebot3_localization 模块同一套调优) ----
+# 里程计运动预测 + 激光与地图似然场匹配 + 粒子重采样,持续输出
+# map -> odom TF,为代价地图与规划提供全局位姿。
+amcl:
+  ros__parameters:
+    # 里程计运动模型噪声(仿真里程计精度高,取保守小值)
+    alpha1: 0.1
+    alpha2: 0.1
+    alpha3: 0.1
+    alpha4: 0.1
+    alpha5: 0.1
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    scan_topic: scan
+
+    # LDS-01: 360 点 / 0.12~3.5 m / 5 Hz
+    laser_model_type: likelihood_field
+    laser_min_range: -1.0
+    laser_max_range: 100.0
+    max_beams: 120
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.2
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+    # 导航中持续运动、观测充分,无需随机粒子注入
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+
+    update_min_d: 0.2
+    update_min_a: 0.2
+    save_pose_rate: 0.5
+
+    tf_broadcast: true
+    transform_tolerance: 1.0
+
+# ---- 地图服务:yaml_filename 由 launch 按最新地图注入 ------------------
+map_server:
+  ros__parameters:
+    yaml_filename: ''
+    topic_name: map
+    frame_id: map
+
+# ---- 全局规划器:NavFn 网格搜索 ----------------------------------------
+# 在全局代价地图上从目标点反向传播势场再梯度提取路径:
+#   use_astar: true 用 A*(路径更贴直线、质量更好);false 用 Dijkstra
+#   (探索更均匀)。burger 在 turtlebot3_world 尺度的地图上两者都是毫秒级。
+#   tolerance: 目标点落在障碍/未知区时,允许在 0.3 m 内就近规划终点。
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 1.0
+    planner_plugins: ['GridBased']
+    GridBased:
+      plugin: 'nav2_navfn_planner/NavfnPlanner'
+      tolerance: 0.3
+      use_astar: true
+      allow_unknown: true
+
+# ---- 局部控制器:DWB 动态窗口采样 ---------------------------------------
+# 在速度空间(vx, ω)采样若干组指令,前向仿真 sim_time 秒生成候选轨迹,
+# 各 critic 打分加权选优:贴路径、朝目标、避障、防振荡、终点旋转。
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ['progress_checker']
+    goal_checker_plugins: ['goal_checker']
+    controller_plugins: ['FollowPath']
+
+    progress_checker:
+      plugin: 'nav2_controller::SimpleProgressChecker'
+      required_movement_radius: 0.1
+      movement_time_allowance: 10.0
+
+    goal_checker:
+      plugin: 'nav2_controller::SimpleGoalChecker'
+      stateful: true
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.25
+
+    FollowPath:
+      plugin: 'dwb_core::DWBLocalPlanner'
+      debug_trajectory_details: true
+      # DWB 级 XY 容差必须小于 goal_checker 的容差:机器人进入本容差后
+      # RotateToGoal critic 只允许原地旋转对准朝向,若此时 goal_checker
+      # 的容差还没满足(DWB 判定比 goal_checker 宽松)则永远到不了终点,
+      # 表现为"差 0.2 m 卡死 + 反复触发恢复行为"
+      xy_goal_tolerance: 0.10
+      # burger 实机线速度上限 0.22 m/s;仿真同步限速,轨迹更稳
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      max_vel_x: 0.22
+      max_vel_y: 0.0
+      max_vel_theta: 1.0
+      min_speed_xy: 0.0
+      max_speed_xy: 0.22
+      min_speed_theta: 0.0
+      # 加速度上限偏高是 TurtleBot3 仿真的已知问题规避:
+      # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
+      acc_lim_x: 3.0
+      acc_lim_y: 0.0
+      acc_lim_theta: 3.2
+      decel_lim_x: -2.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -3.2
+      vx_samples: 20
+      vy_samples: 0
+      vtheta_samples: 40
+      sim_time: 1.5
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      trans_stopped_velocity: 0.25
+      short_circuit_trajectory_evaluation: true
+      stateful: true
+      critics: ['RotateToGoal', 'Oscillation', 'BaseObstacle',
+                'GoalAlign', 'PathAlign', 'PathDist', 'GoalDist']
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+# ---- 局部代价地图:odom 系滚动窗口 --------------------------------------
+# 机器人周围 3x3 m、5 Hz 更新,只叠实时障碍层 + 膨胀层,供 DWB 避障。
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      transform_tolerance: 0.3
+      robot_radius: 0.105
+      plugins: ['obstacle_layer', 'inflation_layer']
+      obstacle_layer:
+        plugin: 'nav2_costmap_2d::ObstacleLayer'
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: 'LaserScan'
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: 'nav2_costmap_2d::InflationLayer'
+        # 膨胀半径 0.55 m ≈ 机器人半径 + 0.45 m 缓冲;代价随距离指数衰减,
+        # 引导路径远离障碍但不至于堵住窄通道
+        inflation_radius: 0.55
+        cost_scaling_factor: 5.0
+      always_send_full_costmap: true
+
+# ---- 全局代价地图:map 系整幅 --------------------------------------------
+# 静态地图层(建图结果)+ 实时障碍层 + 膨胀层,供全局规划器搜索。
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      transform_tolerance: 0.5
+      robot_radius: 0.105
+      track_unknown_space: true
+      plugins: ['static_layer', 'obstacle_layer', 'inflation_layer']
+      static_layer:
+        plugin: 'nav2_costmap_2d::StaticLayer'
+        map_subscribe_transient_local: true
+        transform_tolerance: 0.1
+      obstacle_layer:
+        plugin: 'nav2_costmap_2d::ObstacleLayer'
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: 'LaserScan'
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: 'nav2_costmap_2d::InflationLayer'
+        inflation_radius: 0.55
+        cost_scaling_factor: 5.0
+      always_send_full_costmap: true
+
+# ---- 恢复行为服务器 ------------------------------------------------------
+# 行为树导航失败时依次尝试:清空代价地图 → 原地旋转 360° 扫清障碍 →
+# 后退 0.15 m → 等待,仍失败才放弃本次目标。
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_costmap_topic: global_costmap/costmap_raw
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ['spin', 'backup', 'drive_on_heading', 'wait']
+    spin:
+      plugin: 'nav2_behaviors/Spin'
+    backup:
+      plugin: 'nav2_behaviors/BackUp'
+    drive_on_heading:
+      plugin: 'nav2_behaviors/DriveOnHeading'
+    wait:
+      plugin: 'nav2_behaviors/Wait'
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_timeout: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+# ---- 行为树导航器 --------------------------------------------------------
+# 默认行为树 navigate_to_pose_w_replanning_and_recovery:
+# 以 1 Hz 周期重规划路径应对环境变化,卡住/失败时触发恢复行为。
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.5
+    filter_duration: 0.3
+    goal_blackboard_id: goal
+    path_blackboard_id: path
+    navigators: ['navigate_to_pose', 'navigate_through_poses']
+    navigate_to_pose:
+      plugin: 'nav2_bt_navigator::NavigateToPoseNavigator'
+    navigate_through_poses:
+      plugin: 'nav2_bt_navigator::NavigateThroughPosesNavigator'
+
+# ---- 航点跟随器 ----------------------------------------------------------
+# 按序导航到一串航点(本模块的巡逻任务由 waypoint_patrol 节点自行
+# 逐点调用 navigate_to_pose,更便于逐点报告,故仅保留标准配置备用)。
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: 'wait_at_waypoint'
+    wait_at_waypoint:
+      plugin: 'nav2_waypoint_follower::WaitAtWaypoint'
+      enabled: true
+      waypoint_pause_duration: 200
