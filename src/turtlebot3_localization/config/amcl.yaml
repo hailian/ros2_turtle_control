@@ -1,0 +1,58 @@
+# AMCL 参数 — 针对 TurtleBot3 Burger (LDS-01) 调优
+# 定位原理:里程计给出运动预测,激光扫描与导入地图做似然场匹配,
+# 粒子滤波加权重采样,持续估计机器人在地图中的位姿。
+amcl:
+  ros__parameters:
+    # ---- 里程计运动模型噪声(burger 差速底盘) -------------------------
+    # 仿真中里程计精度高,噪声系数取保守小值,防止粒子云过度发散
+    alpha1: 0.1        # 旋转-旋转噪声
+    alpha2: 0.1        # 旋转-平移噪声
+    alpha3: 0.1        # 平移-平移噪声
+    alpha4: 0.1        # 平移-旋转噪声
+    alpha5: 0.1        # 无关项(差速模型)
+
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+
+    # ---- 坐标系与话题 ---------------------------------------------------
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    scan_topic: scan
+
+    # ---- 激光模型(LDS-01: 360 点 / 0.12~3.5 m / 5 Hz) ------------------
+    laser_model_type: likelihood_field
+    laser_min_range: -1.0     # -1 表示使用传感器消息里的最小值
+    laser_max_range: 100.0    # 不截断,由传感器自身量程决定
+    max_beams: 120            # 参与匹配的波束数(360 点中抽稀,越多越稳)
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.2
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+
+    # ---- 粒子滤波 --------------------------------------------------------
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+    # 随机粒子注入保持关闭:仿真实测开启(fast=0.05)会在机器人贴障
+    # 转向、扫描剧变时冲垮已正确的收敛;重定位场景由 auto_relocalization
+    # 的探索运动提供观测多样性即可
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+
+    # ---- 滤波更新触发阈值(平移 0.2 m 或旋转 0.2 rad 才更新一次) -------
+    update_min_d: 0.2
+    update_min_a: 0.2
+    save_pose_rate: 0.5
+
+    # ---- TF 输出 ----------------------------------------------------------
+    tf_broadcast: true         # 持续发布 map -> odom 修正量
+    transform_tolerance: 1.0
