@@ -16,6 +16,7 @@
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>tf2_ros</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -29,6 +30,8 @@
   <exec_depend>nav2_bt_navigator</exec_depend>
   <exec_depend>nav2_waypoint_follower</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>turtlebot3_slam</exec_depend>
   <exec_depend>rviz2</exec_depend>
 
   <export>

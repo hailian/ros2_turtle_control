@@ -3,9 +3,13 @@
 
 订阅:
     /goal_pose  (PoseStamped)              目标点(RViz 2D Goal Pose 或命令行)
-    /amcl_pose  (PoseWithCovarianceStamped) 当前位姿估计
+    /amcl_pose  (PoseWithCovarianceStamped) AMCL 位姿估计(常规导航模式)
     /plan       (nav_msgs/Path)            最新全局规划路径
     /odom       (Odometry)                 实际运动速度
+
+位姿来源(自动回退):
+    常规导航模式用 /amcl_pose;SLAM 模式(边扫图边导航)没有 AMCL,
+    改用 map -> base_link TF(slam_toolbox 持续发布 map -> odom)。
 
 动作:
     navigate_to_pose (nav2_msgs/action)    relay_goal=true 时把 /goal_pose
@@ -30,6 +34,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from std_msgs.msg import String
+import tf2_ros
 
 
 def yaw_from_quaternion(q):
@@ -63,6 +68,10 @@ class NavMonitor(Node):
         self.create_subscription(Path, 'plan', self._on_plan, 10)
         self.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self._status_pub = self.create_publisher(String, 'navigation_status', 10)
+
+        # SLAM 模式回退位姿来源:map -> base_link TF(slam_toolbox 发布)
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         if self._relay:
             self._action_client = ActionClient(
@@ -154,23 +163,45 @@ class NavMonitor(Node):
             return 0.0
         return (self.get_clock().now() - self._goal_time).nanoseconds / 1e9
 
+    def _pose_from_tf(self):
+        """SLAM 模式回退:从 map -> base_link TF 取最新位姿,失败返回 None。"""
+        try:
+            t = self._tf_buffer.lookup_transform(
+                'map', 'base_link', rclpy.time.Time())
+        except tf2_ros.TransformException:
+            return None
+        yaw = yaw_from_quaternion(t.transform.rotation)
+        return (t.transform.translation.x, t.transform.translation.y, yaw)
+
+    def _current_pose(self):
+        """返回 (x, y, yaw, 来源):优先 AMCL 位姿,SLAM 模式回退 TF。"""
+        if self._pose is not None:
+            p = self._pose.pose.pose.position
+            yaw = yaw_from_quaternion(self._pose.pose.pose.orientation)
+            return (p.x, p.y, yaw, 'AMCL')
+        from_tf = self._pose_from_tf()
+        if from_tf is not None:
+            return (*from_tf, 'SLAM TF')
+        return None
+
     def _distance_to_goal(self):
-        if self._goal is None or self._pose is None:
+        pose = self._current_pose()
+        if self._goal is None or pose is None:
             return float('inf')
         g = self._goal.pose.position
-        p = self._pose.pose.pose.position
-        return math.hypot(g.x - p.x, g.y - p.y)
+        return math.hypot(g.x - pose[0], g.y - pose[1])
 
     def _path_progress(self):
         """计算沿路径剩余里程:先找路径上距机器人最近的点,再累加其后段长。"""
-        if self._plan is None or len(self._plan.poses) < 2 or self._pose is None:
+        pose = self._current_pose()
+        if self._plan is None or len(self._plan.poses) < 2 or pose is None:
             return None
-        p = self._pose.pose.pose.position
+        px, py = pose[0], pose[1]
         pts = [(ps.pose.position.x, ps.pose.position.y)
                for ps in self._plan.poses]
         total = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
         nearest = min(range(len(pts)),
-                      key=lambda k: (pts[k][0] - p.x) ** 2 + (pts[k][1] - p.y) ** 2)
+                      key=lambda k: (pts[k][0] - px) ** 2 + (pts[k][1] - py) ** 2)
         remaining = sum(math.dist(pts[i], pts[i + 1])
                         for i in range(nearest, len(pts) - 1))
         return total, remaining
@@ -178,20 +209,22 @@ class NavMonitor(Node):
     def _report(self):
         if self._goal is None and self._plan is None:
             self._publish('等待目标:RViz 用 "2D Goal Pose" 工具点选,或\n'
-                          'ros2 topic pub --once /goal_pose '
+                          'ros2 topic pub --once -w 1 /goal_pose '
                           'geometry_msgs/msg/PoseStamped \'{header: '
                           '{frame_id: map}, pose: {position: {x: 1.0, '
                           'y: 1.7}}}\'')
             return
-        if self._pose is None:
-            self._publish('尚未收到 AMCL 位姿:请确认定位模块已启动且收敛')
+        pose = self._current_pose()
+        if pose is None:
+            self._publish('尚未获得位姿:常规模式等 /amcl_pose(机器人需移动'
+                          '触发更新);SLAM 模式等 map -> odom TF 就绪')
             return
+        px, py, _, pose_src = pose
 
         g = self._goal.pose.position if self._goal else None
         if g is None and self._plan is not None:
             # 目标来自其他任务节点(如 waypoint_patrol),取路径终点展示
-            last = self._plan.poses[-1].pose.position
-            g = last
+            g = self._plan.poses[-1].pose.position
 
         state_text = {
             'idle': '等待目标', 'navigating': '导航中',
@@ -210,11 +243,8 @@ class NavMonitor(Node):
             pct = max(0.0, min(1.0, 1.0 - remaining / total)) * 100 if total > 0 else 100.0
             parts.append(f'沿路径剩余 {remaining:.2f}/{total:.2f} m ({pct:.0f}%)')
 
-        if self._goal is not None:
-            straight = self._distance_to_goal()
-        else:
-            p = self._pose.pose.pose.position
-            straight = math.hypot(g.x - p.x, g.y - p.y)
+        straight = self._distance_to_goal() if self._goal is not None else \
+            math.hypot(g.x - px, g.y - py)
         parts.append(f'距目标直线 {straight:.2f} m')
         parts.append(f'速度 {self._speed:.2f} m/s')
 
@@ -224,6 +254,7 @@ class NavMonitor(Node):
         parts.append(f'已用 {self._elapsed():.0f} s')
         if self._recoveries:
             parts.append(f'恢复行为 {self._recoveries} 次')
+        parts.append(f'定位: {pose_src}')
         parts.append(f'累计: 成功 {self._stats["succeeded"]}'
                      f'/失败 {self._stats["failed"]}'
                      f'/取消 {self._stats["canceled"]}')

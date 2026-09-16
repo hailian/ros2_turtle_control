@@ -1,16 +1,18 @@
 # turtlebot3_navigation — TurtleBot3 路径规划模块
 
 在**已建好的地图**(`turtlebot3_slam`)与**稳定定位**(`turtlebot3_localization`
-同款 AMCL 配置)之上,启动 nav2 全栈路径规划与运动控制:
+同款 AMCL 配置)之上,启动 nav2 全栈路径规划与运动控制;也支持
+**边扫图边导航**(slam_toolbox 在线建图,无需预建地图):
 
 - **全局规划** NavFn:静态地图 + 实时激光障碍合成代价地图上 A* 搜索无碰路径,
-  行为树 1 Hz 周期重规划应对环境变化
+  行为树 1 Hz 周期重规划应对环境变化;SLAM 模式下允许穿越未知区域
 - **局部控制** DWB:速度空间动态窗口采样,前向仿真轨迹打分(贴路径/朝目标/
   避障/防振荡),输出 `/cmd_vel` 差速指令
 - **恢复行为**:导航失败时依次尝试清代价地图 → 原地旋转 → 后退 → 等待
-- **两个入口**:
+- **三个入口**:
   - `navigation.launch.py` 交互导航:RViz 点选目标点,机器人自主规划巡航
   - `patrol.launch.py` 自动巡逻:按航点列表自主巡航,循环巡逻并汇报
+  - `slam_navigation.launch.py` 边扫图边导航:在线建图 + 导航,免预建地图
 
 组成节点:`map_server`(地图)、`amcl`(定位)、`planner_server`(全局规划)、
 `controller_server`(局部控制)、`behavior_server`(恢复行为)、`bt_navigator`
@@ -21,6 +23,9 @@
   终点直线误差 **0.36 m**(goal_checker 判定成功);返程 8 s,误差 0.14 m
 - 自动巡逻:内圈 4 航点绕障一圈,**4/4 全部成功**,平均每段 16 s,
   总用时 73 s,终点误差 0.08 m
+- 边扫图边导航(空地图起步):未知区域近目标 **17 s / 误差 0.09 m**;
+  横穿全场的远目标 41 s / 误差 0.09 m(途中 1 次恢复行为绕开未扫到的
+  障碍),定位全程来自 slam_toolbox 的 map → odom TF
 
 ## 快速开始(仿真)
 
@@ -102,7 +107,51 @@ launch 参数(patrol 专属):
 
 进度话题:`ros2 topic echo /patrol_status`。
 
+## 边扫图边导航(SLAM 模式,免预建地图)
+
+没有预先建好的地图也能导航:`slam_toolbox` 在线增量建图,自己发布
+`/map`(全局代价地图静态层随之生长)与 map → odom TF(即定位),
+nav2 全栈照常规划巡航。适合首次进场、探索陌生环境的场景。
+
+```bash
+export TURTLEBOT3_MODEL=burger
+ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py        # 终端 1
+ros2 launch turtlebot3_navigation slam_navigation.launch.py     # 终端 2
+```
+
+RViz 里可以看到灰白地图随机器人行进不断生长;用 **2D Goal Pose**
+点选目标即可导航(命令行发目标与常规模式相同)。
+
+工作机制与要点:
+
+- 全局规划允许穿越未知区域(`allow_unknown: true`,未知格无代价信息,
+  NavFn 规划出的路径在未知区是"笔直的乐观路径"),机器人靠 5 Hz 局部
+  代价地图 + 1 Hz 重规划边走边修正;撞见未扫到的障碍时靠恢复行为
+  (旋转/后退)脱困属正常现象。
+- **目标点选择**:优先选已探索(灰白可见)区域;指向完全未知区域的
+  目标也能执行,但若真实环境与乐观路径冲突较多,耗时与失败率会上升。
+- **定位来源**:此模式没有 AMCL,`nav_monitor` 自动改用 map → base_link
+  TF,报告中显示 `定位: SLAM TF`;常规导航模式仍用 `/amcl_pose`。
+- **建图成果保存**(launch 默认带 map_saver 节点):
+  ```bash
+  ros2 service call /save_map std_srvs/srv/Trigger "{}"
+  ```
+  保存后即可切回 `navigation.launch.py` 常规模式(自动选最新地图),
+  完成探索 → 常驻巡航的闭环。
+- 建图质量前提与 `turtlebot3_slam` 模块一致:速度慢(≤0.22 m/s)、
+  避免贴障,回环才关得准。
+
+launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `map_saver` | `true` | 是否启动地图保存节点(/save_map) |
+| `save_dir` | `~/turtlebot3_maps` | 地图保存目录 |
+| `map_name` | `map` | 地图名(保存时自动加时间戳) |
+
 ## 地图与初始位姿
+
+(SLAM 模式无需预建地图与初始位姿,本节适用于常规导航/巡逻。)
 
 与 `turtlebot3_localization` 完全一致:
 
@@ -159,8 +208,12 @@ launch 参数(patrol 专属):
   `nav2_simple_commander` 的 `waitUntilNav2Active()`——Humble 版会阻塞
   等待一条 `/amcl_pose` 消息,静止机器人永远等不到;已改为轮询
   amcl/bt_navigator 生命周期状态,120 s 未就绪会明确报错退出。
-- **lifecycle_manager 偶发卡在 Configuring**:仿真时钟竞态,launch 已
-  延迟 3 秒启动管理器规避;仍出现则重启 launch。
+- **nav_monitor 显示"定位: "的来源**:常规导航为 AMCL(静止时 AMCL 不
+  更新,`/amcl_pose` 静默属正常);SLAM 模式为 TF,若两者都无输出,
+  检查 TF:`ros2 run tf2_tools view_frames`。
+- **lifecycle_manager 偶发卡在 Configuring**:仿真时钟竞态(change_state
+  响应丢失),launch 已延迟 3 秒启动管理器规避;仍出现则重启 launch
+  即可(SLAM 模式实测遇到过一次,重启后正常)。
 
 ## 目录结构
 
@@ -168,7 +221,8 @@ launch 参数(patrol 专属):
 turtlebot3_navigation/
 ├── launch/
 │   ├── navigation.launch.py        # 全栈导航入口(RViz/命令行发目标)
-│   └── patrol.launch.py            # 自动巡逻入口(航点巡航)
+│   ├── patrol.launch.py            # 自动巡逻入口(航点巡航)
+│   └── slam_navigation.launch.py   # 边扫图边导航入口(在线建图)
 ├── config/
 │   ├── nav2_params.yaml            # nav2 全栈参数(AMCL/代价地图/规划/控制)
 │   └── tb3_navigation.rviz         # RViz 导航视图(路径/代价地图/Nav2 面板)
