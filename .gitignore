@@ -1,0 +1,35 @@
+# colcon build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# ROS 2
+*.bag/
+*.db3
+ros2_ws/
+.qtcreator/
+
+# Generated maps
+*.pgm
+*.bt
+*.map.yaml
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
