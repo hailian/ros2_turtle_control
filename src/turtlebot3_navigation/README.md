@@ -19,8 +19,10 @@
 (行为树调度)、`waypoint_follower`(多航点跟随,备用)、`nav_monitor`(导航监测)。
 
 实测(Gazebo turtlebot3_world,burger):
-- 单点导航:出生点 → 对角目标 (1.0, 1.7),路径 4.7 m,**22 s** 到达,
-  终点直线误差 **0.36 m**(goal_checker 判定成功);返程 8 s,误差 0.14 m
+- 单点导航:出生点 → 对角目标 (1.0, 1.7),路径 4.7 m,**22 s** 到达;
+  终点减速逼近:巡航 0.22 m/s → 0.5 m 内逐级降到 0.05 m/s 爬行入点,
+  **实际停车误差(Gazebo 真值)0.04~0.05 m**(AMCL 报告 0.03~0.05 m,
+  两者差值即该点定位噪声)
 - 自动巡逻:内圈 4 航点绕障一圈,**4/4 全部成功**,平均每段 16 s,
   总用时 73 s,终点误差 0.08 m
 - 边扫图边导航(空地图起步):未知区域近目标 **17 s / 误差 0.09 m**;
@@ -53,10 +55,11 @@ ros2 launch turtlebot3_navigation navigation.launch.py
 
 **发送目标点**(三选一):
 
-1. RViz 工具栏 **2D Goal Pose** 在地图上点选(navn_monitor 转发给导航栈)
-2. 命令行:
+1. RViz 工具栏 **2D Goal Pose** 在地图上点选(bt_navigator 原生订阅
+   `/goal_pose`,直接响应)
+2. 命令行(建议 `-t 2` 发两次规避 DDS 发现竞态):
    ```bash
-   ros2 topic pub --once -w 1 /goal_pose geometry_msgs/msg/PoseStamped \
+   ros2 topic pub -w 1 -t 2 /goal_pose geometry_msgs/msg/PoseStamped \
      '{header: {frame_id: map}, pose: {position: {x: 1.0, y: 1.7}}}'
    ```
 3. Nav2 面板(RViz 右侧 Navigation 2 面板)直接下发
@@ -174,30 +177,46 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
 | `set_initial_pose` | `true` | 用 launch 参数作为 AMCL 初始位姿 |
 | `initial_x / initial_y / initial_yaw` | -2.0 / -0.5 / 0.0 | 初始位姿 |
 | `nav_monitor` | `true` | 是否启动导航监测节点 |
-| `relay_goal` | `true` | 是否把 `/goal_pose` 转发为导航动作(与其他任务节点并存时置 `false`) |
 | `report_period` | 2.0 | 报告周期(秒) |
 | `use_rviz` | `true` | 是否启动 RViz2 |
 
+## 终点减速逼近与精度
+
+- **减速机制**:goal_checker 容差 0.08 m + DWB 级容差 0.05 m。终点容差
+  收紧后,冲过终点的高速轨迹被 GoalDist/PathDist critic 重罚,而速度
+  采样覆盖到近零值,机器人自动逐级降速爬行入点(实测巡航 0.22 m/s →
+  0.5 m 内 0.15 → 0.1 m 内 0.05 → 停)。
+- **精度构成**:控制器保证停在判定圈内(≤0.08 m);报告里的"终点误差"
+  含定位(AMCL/地图)噪声,与 Gazebo 真值的差值即该点定位误差。
+  再收紧容差收益有限——瓶颈在定位,不在控制。
+- **两个容差的不等式必须保持**:DWB 级 `xy_goal_tolerance`(0.05)<
+  goal_checker(0.08),否则见下节"卡死"问题。
+
 ## nav_monitor 输出说明
 
-- **状态**:等待目标 / 导航中 / 已到达 / 失败 / 已取消;由
-  `navigate_to_pose` 动作结果判定,`到达` 报告附带终点误差与用时。
+- **状态**:等待目标 / 导航中 / 已到达 / 失败 / 已取消。监测方式是订阅
+  `navigate_to_pose` 动作的 status/feedback 话题,因此**所有来源**的
+  导航(RViz 点选、命令行、waypoint_patrol 巡逻)都会被跟踪与统计,
+  外部任务目标用路径终点展示并单独计算误差。
 - **沿路径剩余 / 进度**:取 `/plan` 最新全局路径,先定位机器人所对应的
   最近路径点,再累加其后路径段长——比直线距离更贴近真实行程。
 - **预计到达**:路径剩余 ÷ 当前速度(速度 < 0.05 m/s 时不估计)。
 - **恢复行为次数**:来自动作反馈,数值持续增长说明机器人反复卡困,
   常见原因是目标点贴近障碍膨胀区或定位漂移。
-- 巡逻等外部任务直接调用动作,`nav_monitor` 以"跟踪外部任务"模式
-  报告路径与进度,不干预控制。
 
 ## 常见问题
 
-- **`ros2 topic pub --once` 发目标没反应**:`--once` 存在订阅匹配竞态,
-  加 `-w 1`(等匹配到订阅者再发),本文示例已带。
+- **`ros2 topic pub` 发目标没反应**:DDS 发现竞态,`--once` 单发可能
+  整条丢失(所有订阅者都收不到)。用 `-t 2` 发两次 + `-w 1` 等匹配;
+  仍无声时先 `ros2 daemon stop` 清理发现缓存再试。
+- **SLAM 模式发远目标立即失败、恢复行为狂转**:目标点在**当前地图
+  边界之外**,NavFn 无从规划。先发近距离目标(地图范围内)边走边扩图,
+  地图长到目标附近后再发远目标;`ros2 topic echo /map --field info`
+  可看地图宽高与原点判断目标是否在界内。
 - **差 0.2 m 左右卡死、反复触发恢复行为**:DWB 的
   `xy_goal_tolerance`(RotateToGoal 进入纯旋转模式的判定)必须**小于**
   goal_checker 的容差,否则两个判死区不重叠,DWB 只旋转不前进而
-  goal_checker 永不满足。本包取 0.10 / 0.20,已实测绕障一圈 4/4 成功;
+  goal_checker 永不满足。本包取 0.05 / 0.08,已实测绕障一圈 4/4 成功;
   调整时务必保持这个不等关系。
 - **NavFn "failed to create plan"**:优先怀疑初始位姿错误(见上节);
   其次目标点落在障碍/未知区(可加大规划 `tolerance`);`ros2 topic echo

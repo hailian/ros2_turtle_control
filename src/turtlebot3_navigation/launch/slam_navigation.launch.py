@@ -103,7 +103,6 @@ def _launch_stack(context):
         parameters=[
             {'use_sim_time': use_sim_time},
             {'report_period': LaunchConfiguration('report_period')},
-            {'relay_goal': LaunchConfiguration('relay_goal')},
         ],
         condition=IfCondition(run_monitor),
     )
@@ -165,9 +164,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav_monitor', default_value='true',
             description='是否启动导航监测节点'),
-        DeclareLaunchArgument(
-            'relay_goal', default_value='true',
-            description='nav_monitor 是否把 /goal_pose 转发为导航动作'),
         DeclareLaunchArgument(
             'report_period', default_value='2.0',
             description='导航监测报告周期(秒)'),

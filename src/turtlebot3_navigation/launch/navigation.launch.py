@@ -18,9 +18,10 @@
     controller_server          DWB 局部控制(速度采样 + 轨迹打分跟踪路径)
     behavior_server            恢复行为(旋转/后退/等待/清代价地图)
     bt_navigator               行为树调度:周期重规划 + 失败恢复
+                               (原生订阅 /goal_pose,直接响应目标点)
     waypoint_follower          多航点跟随(备用)
     nav_monitor                导航监测:目标/路径/进度/速度 中文报告,
-                               并把 /goal_pose 转发给 navigate_to_pose 动作
+                               经动作状态话题覆盖所有来源的导航任务
 """
 
 import glob
@@ -133,7 +134,6 @@ def _resolve_map_and_launch(context):
         parameters=[
             {'use_sim_time': use_sim_time},
             {'report_period': LaunchConfiguration('report_period')},
-            {'relay_goal': LaunchConfiguration('relay_goal')},
         ],
         condition=IfCondition(run_monitor),
     )
@@ -193,10 +193,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav_monitor', default_value='true',
             description='是否启动导航监测节点'),
-        DeclareLaunchArgument(
-            'relay_goal', default_value='true',
-            description='nav_monitor 是否把 /goal_pose 转发为导航动作'
-                        '(与其他任务节点并存时应关闭)'),
         DeclareLaunchArgument(
             'report_period', default_value='2.0',
             description='导航监测报告周期(秒)'),

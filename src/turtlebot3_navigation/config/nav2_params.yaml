@@ -98,17 +98,22 @@ controller_server:
     goal_checker:
       plugin: 'nav2_controller::SimpleGoalChecker'
       stateful: true
-      xy_goal_tolerance: 0.20
+      # 终点判定收紧到 0.08 m:进入终点圈即停时,停点随机落在容差圈内
+      # (实测停在 ~0.09 m);收紧后控制器必须真正开到终点附近才判完成
+      xy_goal_tolerance: 0.08
       yaw_goal_tolerance: 0.25
 
     FollowPath:
       plugin: 'dwb_core::DWBLocalPlanner'
       debug_trajectory_details: true
-      # DWB 级 XY 容差必须小于 goal_checker 的容差:机器人进入本容差后
-      # RotateToGoal critic 只允许原地旋转对准朝向,若此时 goal_checker
-      # 的容差还没满足(DWB 判定比 goal_checker 宽松)则永远到不了终点,
-      # 表现为"差 0.2 m 卡死 + 反复触发恢复行为"
-      xy_goal_tolerance: 0.10
+      # DWB 级 XY 容差必须小于 goal_checker 的容差(0.08):进入本容差后
+      # RotateToGoal critic 只允许原地旋转对准朝向,若 DWB 判定比
+      # goal_checker 宽松则永远到不了终点,表现为"差 0.2 m 卡死 +
+      # 反复触发恢复行为"。
+      # 逼近减速原理:终点容差收紧后,冲过终点的高速轨迹被
+      # GoalDist/PathDist critic 重罚,而速度采样(vx_samples)覆盖到
+      # 近零值,机器人自动逐级降速、缓慢爬行进入终点圈。
+      xy_goal_tolerance: 0.05
       # burger 实机线速度上限 0.22 m/s;仿真同步限速,轨迹更稳
       min_vel_x: 0.0
       min_vel_y: 0.0
@@ -133,7 +138,9 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      trans_stopped_velocity: 0.25
+      # 停稳判定:速度低于该值才视为停止,RotateToGoal 随后原地旋转,
+      # 避免带速转向甩尾放大终点误差
+      trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: ['RotateToGoal', 'Oscillation', 'BaseObstacle',

@@ -47,10 +47,8 @@ def _launch_patrol(context):
             'initial_y': LaunchConfiguration('initial_y'),
             'initial_yaw': LaunchConfiguration('initial_yaw'),
             'use_rviz': LaunchConfiguration('use_rviz'),
-            # 巡逻目标由本节点直接调用动作;nav_monitor 只监测不转发,
-            # 避免两个来源同时抢 navigate_to_pose 动作
+            # nav_monitor 通过动作状态话题监测所有来源的导航,无需特殊配置
             'nav_monitor': 'true',
-            'relay_goal': 'false',
         }.items(),
     )
 
