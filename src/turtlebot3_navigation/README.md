@@ -186,11 +186,21 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
   收紧后,冲过终点的高速轨迹被 GoalDist/PathDist critic 重罚,而速度
   采样覆盖到近零值,机器人自动逐级降速爬行入点(实测巡航 0.22 m/s →
   0.5 m 内 0.15 → 0.1 m 内 0.05 → 停)。
+- **最终朝向对准(反朝向目标不抖动)**:DWB 由
+  `RotationShimController` 包裹。目标朝向与接近方向相反(误差 ~180°)
+  时,若直接让 DWB critic 打分,GoalDist/PathAlign 要求继续前进、
+  RotateToGoal 要求旋转,前进与旋转指令交替输出,末段"边转边蹭"并
+  出现旋转方向翻转。shim 在距终点 0.08 m 且朝向偏差 >29° 时下发
+  **纯旋转指令**(线速度恒为 0)对准最终朝向,绕开 critic 打分。
+  实测反朝向目标末段:减速爬行 → 停稳 → 单方向纯旋转一气呵成;
+  正向目标不受影响(精度 0.05 m 保持)。
 - **精度构成**:控制器保证停在判定圈内(≤0.08 m);报告里的"终点误差"
   含定位(AMCL/地图)噪声,与 Gazebo 真值的差值即该点定位误差。
   再收紧容差收益有限——瓶颈在定位,不在控制。
 - **两个容差的不等式必须保持**:DWB 级 `xy_goal_tolerance`(0.05)<
-  goal_checker(0.08),否则见下节"卡死"问题。
+  goal_checker(0.08);另设 `RotateToGoal.xy_goal_tolerance: 0.10`
+  (critic 独立参数)≥ 判定容差,保证停进判定圈任何位置都允许原地
+  旋转。三者关系调整时保持:RotateToGoal 窗口 ≥ 判定容差 > DWB 级。
 
 ## nav_monitor 输出说明
 
@@ -206,6 +216,10 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
 
 ## 常见问题
 
+- **目标朝向与接近方向相反时末段抖动**:已由 RotationShimController
+  修复(见"终点减速逼近与精度"节);若自行调整容差后复发,检查
+  `RotateToGoal.xy_goal_tolerance`(应 ≥ goal_checker 容差)与
+  shim 的 `forward_sampling_distance`(应 ≈ 判定容差)。
 - **`ros2 topic pub` 发目标没反应**:DDS 发现竞态,`--once` 单发可能
   整条丢失(所有订阅者都收不到)。用 `-t 2` 发两次 + `-w 1` 等匹配;
   仍无声时先 `ros2 daemon stop` 清理发现缓存再试。

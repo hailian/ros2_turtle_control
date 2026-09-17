@@ -104,7 +104,22 @@ controller_server:
       yaw_goal_tolerance: 0.25
 
     FollowPath:
-      plugin: 'dwb_core::DWBLocalPlanner'
+      # RotationShim 包裹 DWB:起点朝向偏离路径 >29° 先原地转正;
+      # 距终点 0.08 m(≈判定容差)内且朝向偏离目标朝向 >29° 时,由
+      # shim 下发纯旋转指令对准最终朝向,绕开 DWB critic 打分——
+      # 否则 GoalDist/PathAlign 想继续前进、RotateToGoal 想旋转,
+      # 前进与旋转指令交替输出,目标朝向与接近方向相反时表现为
+      # 末段抖动(边转边蹭 + 旋转方向翻转)。
+      # DWB 作为 primary_controller 在同一命名空间加载,以下参数
+      # 原样传给 DWB。
+      plugin: 'nav2_rotation_shim_controller::RotationShimController'
+      primary_controller: 'dwb_core::DWBLocalPlanner'
+      angular_dist_threshold: 0.5          # 朝向误差超 ~29° 接管旋转
+      forward_sampling_distance: 0.08      # 距终点该距离内做终点朝向旋转
+      rotate_to_heading_angular_vel: 1.0
+      max_angular_accel: 3.2
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: true
       debug_trajectory_details: true
       # DWB 级 XY 容差必须小于 goal_checker 的容差(0.08):进入本容差后
       # RotateToGoal critic 只允许原地旋转对准朝向,若 DWB 判定比
@@ -155,6 +170,13 @@ controller_server:
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
+      # 旋转窗口(critic 独立参数,与上方 DWB 级 0.05 分开):取 0.10,
+      # 大于等于 goal_checker 容差(0.08),保证机器人停进判定圈的
+      # 任何位置(0.05~0.08 m 环带尤甚)都允许原地旋转对准最终朝向。
+      # 若窗口小于判定容差,停在环带里时 RotateToGoal 禁止旋转、
+      # GoalDist 又要求继续前进,前进与旋转指令交替 = 末段抖动;
+      # 目标朝向与接近方向相反(误差 ~180°)时最明显。
+      RotateToGoal.xy_goal_tolerance: 0.10
 
 # ---- 局部代价地图:odom 系滚动窗口 --------------------------------------
 # 机器人周围 3x3 m、5 Hz 更新,只叠实时障碍层 + 膨胀层,供 DWB 避障。
