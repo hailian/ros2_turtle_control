@@ -33,6 +33,8 @@ setup(
             'nav_monitor = turtlebot3_navigation.nav_monitor:main',
             'waypoint_patrol = '
             'turtlebot3_navigation.waypoint_patrol:main',
+            'kidnap_recovery = '
+            'turtlebot3_navigation.kidnap_recovery:main',
         ],
     },
 )

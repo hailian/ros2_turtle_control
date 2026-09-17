@@ -110,6 +110,36 @@ launch 参数(patrol 专属):
 
 进度话题:`ros2 topic echo /patrol_status`。
 
+## 绑架恢复(机器人被搬动后自动重定位续跑)
+
+机器人被物理搬动(或导航中定位发散)时,`kidnap_recovery` 节点自动
+接管:检测 → 取消目标 → 重定位 → 续跑,全程中文报告
+(`ros2 topic echo /kidnap_status`)。
+
+- **检测**(静默期外满足其一):
+  1. `map -> odom` TF 跳变(绑架后 AMCL 粒子被扫描拉扯出现突跳,
+     阈值 0.4 m / 1 rad;正常定位修正是缓变小量);
+  2. AMCL 协方差连续 3 帧 σxy > 0.6 m(定位发散)。
+- **恢复流程**:取消全部导航目标(动作 cancel-all 服务,正确的
+  rclcpp 服务名为 `<action>/_action/cancel_goal`)→ 调用
+  `/relocalize` 触发 `turtlebot3_localization` 的 auto_relocalization
+  执行全局重定位(撒粒子 → 环视 360° → 带激光安全的探索运动,
+  对称环境也能收敛)→ 监听 `[重定位成功]` 后自动续跑被中断的目标
+  (检测时刻快照判断;静止时被绑架则只恢复不续跑)→ 静默 8 s 后
+  回到监测。
+- **实测**(Gazebo,导航中传送到 3.4 m 外 + 90°):1 s 内检出
+  (TF 跳变 0.91 m),目标即取消,139 s 重定位收敛(行程 9.7 m,
+  σxy=0.34),自动续跑原目标 57 s 到达,真值误差 0.12 m。
+- **限制**:仅常规导航模式(SLAM 模式无 AMCL);对称环境重定位
+  存在方差,编排器 260 s 未收到结果会回到监测(可再次自动/手动
+  `ros2 service call /relocalize std_srvs/srv/Empty` 重试,或用
+  RViz 2D Pose Estimate 辅助);巡逻任务中被取消的航点按取消
+  策略终止本次巡逻(恢复后可重新发起)。
+
+节点参数(`--ros-args -p` 覆盖):`tf_jump_dist`(0.4)、
+`tf_jump_rot`(1.0)、`sigma_xy_thresh`(0.6)、`sigma_consecutive`(3)、
+`auto_resume_goal`(true)、`reloc_timeout`(260)、`warmup_time`(8)。
+
 ## 边扫图边导航(SLAM 模式,免预建地图)
 
 没有预先建好的地图也能导航:`slam_toolbox` 在线增量建图,自己发布
@@ -177,6 +207,7 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
 | `set_initial_pose` | `true` | 用 launch 参数作为 AMCL 初始位姿 |
 | `initial_x / initial_y / initial_yaw` | -2.0 / -0.5 / 0.0 | 初始位姿 |
 | `nav_monitor` | `true` | 是否启动导航监测节点 |
+| `kidnap_recovery` | `true` | 是否启动绑架恢复(检测+自动重定位+续跑) |
 | `report_period` | 2.0 | 报告周期(秒) |
 | `use_rviz` | `true` | 是否启动 RViz2 |
 
@@ -220,6 +251,14 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
   修复(见"终点减速逼近与精度"节);若自行调整容差后复发,检查
   `RotateToGoal.xy_goal_tolerance`(应 ≥ goal_checker 容差)与
   shim 的 `forward_sampling_distance`(应 ≈ 判定容差)。
+- **机器人被搬动后导航行为异常**:由 kidnap_recovery 自动处理
+  (见"绑架恢复"节);若对称环境重定位超时,手动调
+  `ros2 service call /relocalize std_srvs/srv/Empty` 重试或用
+  RViz 2D Pose Estimate。
+- **手动取消所有导航目标**:rclcpp 动作的取消服务名是
+  `<action>/_action/cancel_goal`(不是 rclpy 习惯的 `_action/cancel`),
+  空 goal_id 即取消全部:
+  `ros2 service call /navigate_to_pose/_action/cancel_goal action_msgs/srv/CancelGoal '{}'`
 - **`ros2 topic pub` 发目标没反应**:DDS 发现竞态,`--once` 单发可能
   整条丢失(所有订阅者都收不到)。用 `-t 2` 发两次 + `-w 1` 等匹配;
   仍无声时先 `ros2 daemon stop` 清理发现缓存再试。
@@ -261,7 +300,8 @@ turtlebot3_navigation/
 │   └── tb3_navigation.rviz         # RViz 导航视图(路径/代价地图/Nav2 面板)
 ├── turtlebot3_navigation/
 │   ├── nav_monitor.py              # 导航监测节点(+ /goal_pose 转发)
-│   └── waypoint_patrol.py          # 航点巡逻任务节点
+│   ├── waypoint_patrol.py          # 航点巡逻任务节点
+│   └── kidnap_recovery.py          # 绑架恢复协调节点(检测/取消/续跑)
 ├── package.xml
 └── setup.py
 ```

@@ -100,7 +100,9 @@ launch 参数(在通用参数之外):
 
 节点内参数(可用 `--ros-args -p` 覆盖):`sigma_xy_thresh`(0.3)、
 `sigma_yaw_thresh`(0.25)、`min_traveled`(2.5)、`safety_dist`(0.3)、
-`rotate_speed`(0.4)、`drive_speed`(0.1)等。
+`rotate_speed`(0.4)、`drive_speed`(0.1)、`autostart`(true,启动即
+自动求解;turtlebot3_navigation 的绑架恢复以 `autostart:=false`
+复用本节点,按需经 `/relocalize` 触发)等。
 
 **提示**:高度对称的环境(如 turtlebot3_world 的 3×3 圆柱阵列)存在镜像/
 旋转歧义,自动重定位需要足够的探索行程才能打破——若在超时内未收敛,

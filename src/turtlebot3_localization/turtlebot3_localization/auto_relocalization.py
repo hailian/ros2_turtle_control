@@ -69,6 +69,7 @@ class AutoRelocalization(Node):
         self.declare_parameter('safety_dist', 0.3)       # 前向安全距离 m
         self.declare_parameter('min_traveled', 2.5)      # 接受收敛前最少行程 m
         self.declare_parameter('respread_interval', 1e9) # 重撒冷却 s(默认关闭)
+        self.declare_parameter('autostart', True)       # 启动即自动求解
 
         self._p = {name: self.get_parameter(name).value
                    for name in ['rotate_speed', 'drive_speed', 'loop_leg',
@@ -114,10 +115,16 @@ class AutoRelocalization(Node):
         self._state_ts = None       # 当前状态的进入时刻(看门狗)
 
         self.create_timer(0.05, self._tick)
-        self.get_logger().info(
-            'auto_relocalization 就绪:启动即自动重定位;'
-            '也可调用 "ros2 service call /relocalize std_srvs/srv/Empty" 触发')
-        self._start()
+        if bool(self.get_parameter('autostart').value):
+            self.get_logger().info(
+                'auto_relocalization 就绪:启动即自动重定位;'
+                '也可调用 "ros2 service call /relocalize std_srvs/srv/Empty" 触发')
+            self._start()
+        else:
+            # 供其他模块(如 turtlebot3_navigation 的绑架恢复)按需触发
+            self.get_logger().info(
+                'auto_relocalization 就绪:autostart 已关闭,'
+                '等待 /relocalize 服务触发')
 
     # ---------------- 回调 ----------------
     def _on_relocalize(self, request, response):

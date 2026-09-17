@@ -138,6 +138,25 @@ def _resolve_map_and_launch(context):
         condition=IfCondition(run_monitor),
     )
 
+    # 绑架恢复:监测 map->odom 跳变与协方差爆炸,自动全局重定位并续跑;
+    # 重定位求解由 turtlebot3_localization 的 auto_relocalization 执行
+    # (autostart 关闭,由 kidnap_recovery 检测到绑架后调 /relocalize 触发)
+    kidnap_node = Node(
+        package='turtlebot3_navigation', executable='kidnap_recovery',
+        name='kidnap_recovery', output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(LaunchConfiguration('kidnap_recovery')),
+    )
+    relocalization_node = Node(
+        package='turtlebot3_localization', executable='auto_relocalization',
+        name='auto_relocalization', output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'autostart': False},
+        ],
+        condition=IfCondition(LaunchConfiguration('kidnap_recovery')),
+    )
+
     rviz_node = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         arguments=['-d', os.path.join(
@@ -158,6 +177,8 @@ def _resolve_map_and_launch(context):
         waypoint_follower_node,
         lifecycle_manager_node,
         nav_monitor_node,
+        kidnap_node,
+        relocalization_node,
         rviz_node,
     ]
 
@@ -193,6 +214,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav_monitor', default_value='true',
             description='是否启动导航监测节点'),
+        DeclareLaunchArgument(
+            'kidnap_recovery', default_value='true',
+            description='是否启动绑架恢复节点(检测搬动/定位发散,'
+                        '自动全局重定位并续跑目标)'),
         DeclareLaunchArgument(
             'report_period', default_value='2.0',
             description='导航监测报告周期(秒)'),
