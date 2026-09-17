@@ -130,11 +130,17 @@ launch 参数(patrol 专属):
 - **实测**(Gazebo,导航中传送到 3.4 m 外 + 90°):1 s 内检出
   (TF 跳变 0.91 m),目标即取消,139 s 重定位收敛(行程 9.7 m,
   σxy=0.34),自动续跑原目标 57 s 到达,真值误差 0.12 m。
+- **启动即重定位**:`relocalize_on_start:=true` 时不信任预设初始位姿,
+  冷启动立即全局求解机器人真实位置(不设 initial_pose,
+  auto_relocalization 以 autostart 运行,kidnap_recovery 等求解完成
+  后再开始监测)。适合机器人摆放位置未知/变化大的场景。
 - **限制**:仅常规导航模式(SLAM 模式无 AMCL);对称环境重定位
   存在方差,编排器 260 s 未收到结果会回到监测(可再次自动/手动
   `ros2 service call /relocalize std_srvs/srv/Empty` 重试,或用
   RViz 2D Pose Estimate 辅助);巡逻任务中被取消的航点按取消
-  策略终止本次巡逻(恢复后可重新发起)。
+  策略终止本次巡逻(恢复后可重新发起);从中央柱阵等强对称区域
+  起步时收敛明显更难(实测曾 260 s 未收敛),优先摆放在通道/
+  开阔处。
 
 节点参数(`--ros-args -p` 覆盖):`tf_jump_dist`(0.4)、
 `tf_jump_rot`(1.0)、`sigma_xy_thresh`(0.6)、`sigma_consecutive`(3)、
@@ -208,6 +214,7 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
 | `initial_x / initial_y / initial_yaw` | -2.0 / -0.5 / 0.0 | 初始位姿 |
 | `nav_monitor` | `true` | 是否启动导航监测节点 |
 | `kidnap_recovery` | `true` | 是否启动绑架恢复(检测+自动重定位+续跑) |
+| `relocalize_on_start` | `false` | 启动即重定位:不信任预设初始位姿,冷启动立即全局求解位置 |
 | `report_period` | 2.0 | 报告周期(秒) |
 | `use_rviz` | `true` | 是否启动 RViz2 |
 
@@ -255,6 +262,11 @@ launch 参数(slam_navigation 专属,其余与 navigation 同名同义):
   (见"绑架恢复"节);若对称环境重定位超时,手动调
   `ros2 service call /relocalize std_srvs/srv/Empty` 重试或用
   RViz 2D Pose Estimate。
+- **`/relocalize` 重触发没有反应**:auto_relocalization 长时间运行
+  (尤其超时一轮之后)偶发内部定时器停摆(服务仍在但控制节拍
+  不发,rclpy 层问题,独立探针无法复现),此时重启 launch 即可
+  恢复;该节点属 turtlebot3_localization,其自身的启动即求解
+  (relocalization.launch.py)不受影响。
 - **手动取消所有导航目标**:rclcpp 动作的取消服务名是
   `<action>/_action/cancel_goal`(不是 rclpy 习惯的 `_action/cancel`),
   空 goal_id 即取消全部:

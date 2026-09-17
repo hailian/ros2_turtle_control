@@ -35,6 +35,7 @@
 """
 
 import math
+import time
 
 import rclpy
 from action_msgs.msg import GoalStatusArray
@@ -70,6 +71,8 @@ class KidnapRecovery(Node):
         self.declare_parameter('warmup_time', 8.0)
         self.declare_parameter('reloc_timeout', 260.0)
         self.declare_parameter('check_period', 0.5)
+        # 启动即重定位模式:先等 auto_relocalization 求解完成再开始监测
+        self.declare_parameter('wait_initial_reloc', False)
 
         p = lambda name: self.get_parameter(name).value
         self._jump_dist = float(p('tf_jump_dist'))
@@ -111,9 +114,17 @@ class KidnapRecovery(Node):
         self._status_pub = self.create_publisher(String, 'kidnap_status', 10)
         self.create_timer(float(p('check_period')), self._check)
 
-        self.get_logger().info(
-            'kidnap_recovery 就绪:监测 map->odom 跳变与 AMCL 协方差,'
-            '检测到绑架后取消目标、触发自动重定位并续跑')
+        if bool(p('wait_initial_reloc')):
+            # 启动即重定位:直接进入"等待重定位结果"状态,期间不监测
+            # (求解过程自身会产生 TF 跳变与协方差波动,须避免误触发)
+            self._switch_state(RELOCATING)
+            self.get_logger().info(
+                'kidnap_recovery 就绪:等待启动重定位完成后再开始监测'
+                '(relocalize_on_start 模式)')
+        else:
+            self.get_logger().info(
+                'kidnap_recovery 就绪:监测 map->odom 跳变与 AMCL 协方差,'
+                '检测到绑架后取消目标、触发自动重定位并续跑')
 
     # ---- 订阅回调 -------------------------------------------------------
 
@@ -151,11 +162,13 @@ class KidnapRecovery(Node):
     # ---- 状态机 ----------------------------------------------------------
 
     def _elapsed_in_state(self):
-        return (self.get_clock().now() - self._state_since).nanoseconds / 1e9
+        # 用单调壁钟:节点启动瞬间仿真时钟(/clock)尚未就绪,时间戳为 0,
+        # 一旦 /clock 到达 elapsed 会瞬间变成数千秒,导致超时误触发
+        return time.monotonic() - self._state_since
 
     def _switch_state(self, state):
         self._state = state
-        self._state_since = self.get_clock().now()
+        self._state_since = time.monotonic()
 
     def _check(self):
         if self._state == MONITORING:

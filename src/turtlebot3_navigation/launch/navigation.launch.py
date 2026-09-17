@@ -42,7 +42,12 @@ def _resolve_map_and_launch(context):
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_rviz = LaunchConfiguration('use_rviz')
     run_monitor = LaunchConfiguration('nav_monitor')
-    set_initial_pose = LaunchConfiguration('set_initial_pose')
+    # 启动即重定位:不信任预设初始位姿,冷启动立即全局求解真实位置
+    reloc_on_start = LaunchConfiguration('relocalize_on_start').perform(
+        context).strip().lower() in ('true', '1')
+    set_initial_pose = (False if reloc_on_start else
+                        LaunchConfiguration('set_initial_pose').perform(
+                            context).strip().lower() == 'true')
 
     params_file = LaunchConfiguration('params_file').perform(context).strip()
     if not os.path.isfile(params_file):
@@ -70,7 +75,7 @@ def _resolve_map_and_launch(context):
 
     # AMCL 初始位姿(仿真中机器人出生于 turtlebot3_world 的 -2.0, -0.5)
     amcl_extra = {
-        'set_initial_pose': ParameterValue(set_initial_pose, value_type=bool),
+        'set_initial_pose': set_initial_pose,
         'initial_pose.x': ParameterValue(
             LaunchConfiguration('initial_x'), value_type=float),
         'initial_pose.y': ParameterValue(
@@ -144,7 +149,10 @@ def _resolve_map_and_launch(context):
     kidnap_node = Node(
         package='turtlebot3_navigation', executable='kidnap_recovery',
         name='kidnap_recovery', output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'wait_initial_reloc': reloc_on_start},
+        ],
         condition=IfCondition(LaunchConfiguration('kidnap_recovery')),
     )
     relocalization_node = Node(
@@ -152,7 +160,8 @@ def _resolve_map_and_launch(context):
         name='auto_relocalization', output='screen',
         parameters=[
             {'use_sim_time': use_sim_time},
-            {'autostart': False},
+            # 启动即重定位时自动求解;否则待命,由 kidnap_recovery 触发
+            {'autostart': reloc_on_start},
         ],
         condition=IfCondition(LaunchConfiguration('kidnap_recovery')),
     )
@@ -168,6 +177,10 @@ def _resolve_map_and_launch(context):
 
     return [
         LogInfo(msg=f'导航使用地图: {map_yaml}'),
+        LogInfo(msg=('启动即重定位模式:不设初始位姿,冷启动全局求解真实位置'
+                     if reloc_on_start else
+                     '预设初始位姿模式:relocalize_on_start:=true 可改为'
+                     '启动即全局重定位')),
         map_server_node,
         amcl_node,
         planner_node,
@@ -218,6 +231,10 @@ def generate_launch_description():
             'kidnap_recovery', default_value='true',
             description='是否启动绑架恢复节点(检测搬动/定位发散,'
                         '自动全局重定位并续跑目标)'),
+        DeclareLaunchArgument(
+            'relocalize_on_start', default_value='false',
+            description='启动即重定位:不信任预设初始位姿,冷启动立即'
+                        '全局求解机器人真实位置(依赖 kidnap_recovery)'),
         DeclareLaunchArgument(
             'report_period', default_value='2.0',
             description='导航监测报告周期(秒)'),

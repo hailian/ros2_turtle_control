@@ -17,10 +17,12 @@
 """
 
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
@@ -114,7 +116,11 @@ class AutoRelocalization(Node):
         self._last_respread = None  # 上次重撒粒子时刻(冷却控制)
         self._state_ts = None       # 当前状态的进入时刻(看门狗)
 
-        self.create_timer(0.05, self._tick)
+        # 50 Hz 控制节拍用壁钟:节点随导航栈冷启动时(仿真刚起、/clock
+        # 未就绪)仿真时钟定时器会停摆,实测表现为卡在环视不发指令;
+        # 壁钟定时器不受影响,且控制环本就不应依赖仿真时钟推进
+        self.create_timer(
+            0.05, self._tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
         if bool(self.get_parameter('autostart').value):
             self.get_logger().info(
                 'auto_relocalization 就绪:启动即自动重定位;'
@@ -180,7 +186,9 @@ class AutoRelocalization(Node):
     # ---------------- 状态机 ----------------
     def _start(self):
         self._set_state(WAIT_SERVICES)
-        self._start_time = self.get_clock().now()
+        # 超时/看门狗计时用单调壁钟:冷启动时仿真时钟尚未就绪(读数为 0),
+        # 仿真时钟一到 elapsed 会瞬间变成数千秒导致误判超时
+        self._start_time = time.monotonic()
         self._rotated = 0.0
         self._leg_index = 0
         self._consec = 0
@@ -224,7 +232,7 @@ class AutoRelocalization(Node):
                 and traveled_ok and self._pose_msg):
             self._set_state(CONVERGED)
             return True
-        elapsed = (self.get_clock().now() - self._start_time).nanoseconds * 1e-9
+        elapsed = time.monotonic() - self._start_time
         if elapsed > self._p['timeout']:
             self._set_state(FAILED)
             return True
@@ -232,7 +240,7 @@ class AutoRelocalization(Node):
 
     def _set_state(self, new_state):
         self._state = new_state
-        self._state_ts = self.get_clock().now()
+        self._state_ts = time.monotonic()
 
     def _tick(self):
         if self._state == IDLE:
@@ -243,8 +251,7 @@ class AutoRelocalization(Node):
         # 看门狗:运动状态超过 45 s 未迁移视为卡死,强制转向脱困
         if self._state_ts is not None and self._state not in (
                 WAIT_SERVICES, IDLE, CONVERGED, FAILED):
-            stuck = (self.get_clock().now()
-                     - self._state_ts).nanoseconds * 1e-9
+            stuck = time.monotonic() - self._state_ts
             if stuck > 45.0:
                 self._publish_status(f'状态 {self._state} 超过 45 s,看门狗强制转向')
                 self._stop_robot()
@@ -335,8 +342,8 @@ class AutoRelocalization(Node):
                     self._loops += 1
                     # 长期无进展才重撒粒子(默认关闭:AMCL 的自适应粒子
                     # 注入已能处理坏假设,周期性清零反而打断正常收敛)
-                    now = self.get_clock().now()
-                    cooldown = (now - self._last_respread).nanoseconds * 1e-9 \
+                    now = time.monotonic()
+                    cooldown = now - self._last_respread \
                         if self._last_respread is not None else 1e9
                     if cooldown > self._p['respread_interval']:
                         if self._global_srv.service_is_ready():
@@ -364,8 +371,7 @@ class AutoRelocalization(Node):
             sigma_xy = math.hypot(math.sqrt(max(cov[0], 0.0)),
                                   math.sqrt(max(cov[7], 0.0)))
             sigma_yaw = math.sqrt(max(cov[35], 0.0))
-            elapsed = (self.get_clock().now()
-                       - self._start_time).nanoseconds * 1e-9
+            elapsed = time.monotonic() - self._start_time
             self._publish_status(
                 f'[重定位成功] 机器人位置: x={p.x:+.2f} m, y={p.y:+.2f} m, '
                 f'朝向 {yaw:+.2f} rad ({math.degrees(yaw):+.0f}°) | '
